@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-ssr/
+tsconfig.tsbuildinfo
+
+# env / secrets — this repo must never contain credentials
+.env
+.env.*
+!.env.example
+
+# logs / editor / OS
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/

@@ -1,0 +1,130 @@
+[
+ {
+  "number": 1,
+  "name": "AJ Schulte - Cover 4 Quarters",
+  "columnHeader": "AJ Schulte Mock 11/5/26",
+  "type": "Mock Draft",
+  "date": "Nov 5, 2026",
+  "notes": "96 picks, Rounds 1-3. Draft order from Tankathon. Excludes Arch Manning, Trevor Goosby, David Stone, Dante Moore (returning to school per author)."
+ },
+ {
+  "number": 2,
+  "name": "Mel Kiper Jr. - ESPN",
+  "columnHeader": "Mel Kiper Jr. Big Board",
+  "type": "Big Board",
+  "date": "Nov 2026",
+  "notes": "Top 25 overall + positional rankings. Note: Kiper includes Arch Manning, Dante Moore, Trevor Goosby, David Stone - Schulte excluded them as returning to school."
+ },
+ {
+  "number": 3,
+  "name": "Mock Draft #3 - author/source not named in paste",
+  "columnHeader": "Mock #3 1st Rd 11/7/26",
+  "type": "Mock Draft",
+  "date": "Nov 7, 2026",
+  "notes": "32 picks, First Round only. Tell me who this is from and I will rename it."
+ },
+ {
+  "number": 4,
+  "name": "Nate Tice - Yahoo Sports",
+  "columnHeader": "Nate Tice Yahoo 11/6/26",
+  "type": "Big Board",
+  "date": "Nov 6, 2026",
+  "notes": "60 names + 4 Just Missed. Assumes players declaring. Austin Simmons note: reportedly re-signed with Missouri for 2027, caveat can still explore draft."
+ },
+ {
+  "number": 5,
+  "name": "Rob Rang - Fox Sports",
+  "columnHeader": "Rob Rang Fox 11/5/26",
+  "type": "Mock Draft",
+  "date": "Nov 5, 2026",
+  "notes": "32 picks, First Round only. 6 QBs in Round 1. Draft order by current standings."
+ },
+ {
+  "number": 6,
+  "name": "Nick Baumgardner - The Athletic",
+  "columnHeader": "Nick Baumgardner Mock Top 10 10/30/26",
+  "type": "Mock Draft Top 10",
+  "date": "Oct 30, 2026 (upd Nov 2)",
+  "notes": "Top 10 only. Draft order from Austin Mock projections. Jets trade up to #1 for Mestemaker (give 6, 8, 2027 3rd, 2028 mid)."
+ },
+ {
+  "number": 7,
+  "name": "Todd McShay - The Ringer",
+  "columnHeader": "Todd McShay Midseason + Stock Five 11/15/26 (partial)",
+  "type": "Midseason Top 50 + Stock Five 11/15/26",
+  "date": "Nov 2026 (upd Nov 15, 2026)",
+  "notes": "PARTIAL - only overall ranks explicitly stated in paste fed as numbers (13 players). Full top 50 not yet published (official version late Dec). Manning/Sellers N/A trending 2028, Sammy Brown out of top 50."
+ },
+ {
+  "number": 8,
+  "name": "Mike Renner - CBS Sports",
+  "columnHeader": "Mike Renner CBS Top 150 10/14/26",
+  "type": "Big Board Top 150",
+  "date": "Oct 14, 2026",
+  "notes": "150 prospects. 10 QBs included. Renner spells Colin Simmons as Collin Simmons."
+ },
+ {
+  "number": 9,
+  "name": "Drafttek",
+  "columnHeader": "Drafttek Top 150 11/4/26",
+  "type": "Big Board Top 150",
+  "date": "Nov 4, 2026",
+  "notes": "Top 150 shown (board is Top-606). Drafttek pos codes mapped: DL1T/DL3T=DT, DL5T=EDGE, OLB/ILB=LB, OC=C, OG=G, WRS=WR, CBN=CB."
+ },
+ {
+  "number": 10,
+  "name": "Unnamed Big Board",
+  "columnHeader": "Unnamed Big Board 1-300 (no author in paste)",
+  "type": "Big Board 1-300",
+  "date": "Nov 2026",
+  "notes": "No author/site in paste - ask Seth. Ranks 1-300 with 2026 stats. Sam Leavitt listed at LSU."
+ },
+ {
+  "number": 11,
+  "name": "Seth's Board",
+  "columnHeader": "Seth's Board",
+  "type": "Big Board (ranker app)",
+  "date": "Nov 8, 2026",
+  "notes": "Seth's own board, submitted Nov 8, 2026 - 82 players ranked."
+ },
+ {
+  "number": 12,
+  "name": "Mike Renner - CBS Sports",
+  "columnHeader": "Mike Renner CBS Mock 3 Rds 11/11/26",
+  "type": "Mock Draft 3 Rds",
+  "date": "Nov 11, 2026",
+  "notes": ""
+ },
+ {
+  "number": 13,
+  "name": "Cory Kinnan - Daft on Draft",
+  "columnHeader": "Cory Kinnan Mock Top 10 11/11/26",
+  "type": "Mock Draft Top 10",
+  "date": "Nov 11, 2026",
+  "notes": ""
+ },
+ {
+  "number": 14,
+  "name": "B/R NFL Scouting Dept - Bleacher Report",
+  "columnHeader": "B/R Mock 1st Rd 11/11/26",
+  "type": "Mock Draft 1st Rd",
+  "date": "Nov 11, 2026",
+  "notes": ""
+ },
+ {
+  "number": 15,
+  "name": "Brian Bosarge",
+  "columnHeader": "Brian Bosarge Mock 5.0 11/11/26",
+  "type": "Mock Draft 5.0 1st Rd",
+  "date": "Nov 11, 2026",
+  "notes": ""
+ },
+ {
+  "number": 16,
+  "name": "Nick Baumgardner - The Athletic",
+  "columnHeader": "Nick Baumgardner Mock R1 11/11/26",
+  "type": "Mock Draft 1st Rd",
+  "date": "Nov 11, 2026",
+  "notes": ""
+ }
+]

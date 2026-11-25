@@ -1,0 +1,846 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CONFERENCE_ORDER, FBS_TEAM_IDS, TEAM_CONFERENCE } from './fbs'
+import { Logo } from './Logo'
+
+/* ------------------------------------------------------------------ */
+/* ESPN public endpoints (no API key).                                 */
+/*  AP poll:  site.api.espn.com/.../college-football/rankings         */
+/*            -> rankings[] entry with type "ap", ranks[25] + others  */
+/*  Team bank: site.api.espn.com/.../college-football/teams?limit=1000*/
+/*            -> filtered to the 138 FBS ids (static spine in fbs.ts) */
+/*  Records:  sports.core.api.espn.com/.../groups/80/standings/0      */
+/*            -> one call, overall record inline per team             */
+/* ------------------------------------------------------------------ */
+const RANKINGS_URL =
+  'https://site.api.espn.com/apis/site/v2/sports/football/college-football/rankings'
+const TEAMS_URL =
+  'https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000'
+const STANDINGS_URL =
+  'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/2026/types/2/groups/80/standings/0'
+
+const STORAGE_KEY = 'ssb-top25-v1'
+const CFP_SELECTION_DAY = 'DECEMBER 6, 2026'
+
+export interface EspnTeam {
+  id: string
+  displayName: string
+  abbreviation: string
+  color: string
+  alternateColor: string
+  logo: string
+  conference: string
+  record: string
+  /** AP points (Top 25) or votes (Receiving Votes). 0 for hand-added teams. */
+  points: number
+}
+
+interface ApPoll {
+  date: string
+  teams: EspnTeam[]
+  receivingVotes: EspnTeam[]
+}
+
+interface SavedTop25 {
+  custom: string[]
+  rv: { id: string; points: number }[]
+  pollDate: string
+  customized: boolean
+}
+
+function normalizeTeam(raw: any, points = 0, record = ''): EspnTeam {
+  const t = raw.team ?? raw
+  const location: string = t.location ?? ''
+  const name: string = t.name ?? ''
+  const displayName: string =
+    t.displayName ?? [location, name].filter(Boolean).join(' ') ?? 'Unknown'
+  const logos: any[] = t.logos ?? []
+  const logo =
+    logos.find((l) => (l.rel ?? []).includes('default'))?.href ??
+    logos[0]?.href ??
+    `https://a.espncdn.com/i/teamlogos/ncaa/500/${t.id}.png`
+  return {
+    id: String(t.id),
+    displayName,
+    abbreviation: t.abbreviation ?? displayName.slice(0, 4).toUpperCase(),
+    color: t.color ?? '333333',
+    alternateColor: t.alternateColor ?? 'ffffff',
+    logo,
+    conference: t.groups?.shortName ?? TEAM_CONFERENCE[String(t.id)] ?? 'FBS',
+    record: raw.recordSummary ?? record ?? '',
+    points,
+  }
+}
+
+async function fetchApPoll(): Promise<ApPoll> {
+  const res = await fetch(RANKINGS_URL)
+  if (!res.ok) throw new Error(`AP poll fetch failed (HTTP ${res.status})`)
+  const data = await res.json()
+  const ap = (data.rankings ?? []).find(
+    (r: any) => r.type === 'ap' || /AP Top 25/i.test(r.name ?? ''),
+  )
+  if (!ap) throw new Error('No AP Top 25 found in the ESPN rankings response')
+  const teams = (ap.ranks ?? [])
+    .slice()
+    .sort((a: any, b: any) => a.current - b.current)
+    .map((r: any) => normalizeTeam(r, r.points ?? 0))
+  const receivingVotes = (ap.others ?? [])
+    .slice()
+    .sort((a: any, b: any) => (b.points ?? 0) - (a.points ?? 0))
+    .map((r: any) => normalizeTeam(r, r.points ?? 0))
+  return { date: ap.date ?? '', teams, receivingVotes }
+}
+
+async function fetchTeamBank(): Promise<EspnTeam[]> {
+  const [teamsRes, standingsRes] = await Promise.all([
+    fetch(TEAMS_URL),
+    fetch(STANDINGS_URL).catch(() => null),
+  ])
+  if (!teamsRes.ok) throw new Error(`Team list fetch failed (HTTP ${teamsRes.status})`)
+  const data = await teamsRes.json()
+  const all = (data.sports?.[0]?.leagues?.[0]?.teams ?? []).map((w: any) => w.team)
+  const fbs = new Set(FBS_TEAM_IDS)
+  const records = new Map<string, string>()
+  if (standingsRes && standingsRes.ok) {
+    try {
+      const s = await standingsRes.json()
+      for (const entry of s.standings ?? []) {
+        const ref: string = entry.team?.$ref ?? ''
+        const m = ref.match(/\/teams\/(\d+)/)
+        if (m) records.set(m[1], entry.records?.[0]?.summary ?? '')
+      }
+    } catch {
+      /* records stay blank; poll data still covers ranked teams */
+    }
+  }
+  return all
+    .filter((t: any) => fbs.has(String(t.id)))
+    .map((t: any) =>
+      normalizeTeam({ team: t }, 0, records.get(String(t.id)) ?? ''),
+    )
+    .sort((a: EspnTeam, b: EspnTeam) => a.displayName.localeCompare(b.displayName))
+}
+
+function loadSaved(): SavedTop25 | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as SavedTop25) : null
+  } catch {
+    return null
+  }
+}
+
+function formatPollDate(iso: string): string {
+  if (!iso) return 'AP POLL'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'AP POLL'
+  return d
+    .toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'America/Chicago',
+    })
+    .toUpperCase()
+}
+
+export function Top25() {
+  const [bank, setBank] = useState<EspnTeam[]>([])
+  const [bankError, setBankError] = useState('')
+  const [poll, setPoll] = useState<ApPoll | null>(null)
+  const [pollError, setPollError] = useState('')
+  const [pollLoading, setPollLoading] = useState(true)
+  const [custom, setCustom] = useState<EspnTeam[]>([])
+  const [rv, setRv] = useState<EspnTeam[]>([])
+  const [pollDate, setPollDate] = useState('')
+  const [customized, setCustomized] = useState(false)
+  const [pendingPoll, setPendingPoll] = useState<ApPoll | null>(null)
+  const [confTab, setConfTab] = useState('All')
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [notice, setNotice] = useState('')
+  const [cardBusy, setCardBusy] = useState(false)
+  const seededRef = useRef(false)
+
+  /** Adopt a poll as the starting point (fresh seed or accepted refresh). */
+  const adoptPoll = useCallback((ap: ApPoll, markCustomized: boolean) => {
+    setCustom(ap.teams)
+    setRv(ap.receivingVotes)
+    setPollDate(ap.date)
+    setCustomized(markCustomized)
+    setPendingPoll(null)
+  }, [])
+
+  /** Handle a freshly fetched poll against whatever the user already has. */
+  const handleFreshPoll = useCallback(
+    (ap: ApPoll) => {
+      const saved = loadSaved()
+      if (!saved || saved.custom.length === 0) {
+        adoptPoll(ap, false)
+        return
+      }
+      if (saved.pollDate && ap.date && saved.pollDate !== ap.date) {
+        if (saved.customized) {
+          // Never wipe custom rankings without asking.
+          setPendingPoll(ap)
+          setNotice(
+            `A new AP poll is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
+          )
+        } else {
+          adoptPoll(ap, false)
+          setNotice(`Updated to the new AP poll (${formatPollDate(ap.date)}).`)
+        }
+      }
+      // Same poll date: keep the saved custom rankings as-is.
+    },
+    [adoptPoll],
+  )
+
+  useEffect(() => {
+    // Restore saved custom rankings first so the screen never flashes empty.
+    const saved = loadSaved()
+    if (saved && saved.custom.length > 0) {
+      setPollDate(saved.pollDate)
+      setCustomized(saved.customized)
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ap = await fetchApPoll()
+        if (cancelled) return
+        setPoll(ap)
+        // Resolve saved ids against the freshly fetched poll + bank data.
+        if (saved && saved.custom.length > 0) {
+          const resolve = (id: string, pts: number) => {
+            const fromPoll =
+              ap.teams.find((t) => t.id === id) ??
+              ap.receivingVotes.find((t) => t.id === id)
+            if (fromPoll) return { ...fromPoll, points: pts }
+            return null // bank resolves it below, once loaded
+          }
+          const resolved = saved.custom
+            .map((id) => resolve(id, 0))
+            .filter((t): t is EspnTeam => t !== null)
+          const resolvedRv = saved.rv
+            .map((r) => resolve(r.id, r.points))
+            .filter((t): t is EspnTeam => t !== null)
+          if (resolved.length === saved.custom.length) {
+            setCustom(resolved)
+            setRv(resolvedRv)
+          }
+          // If some ids are only in the bank, the bank effect below fills them.
+        }
+        handleFreshPoll(ap)
+        seededRef.current = true
+      } catch (e) {
+        if (!cancelled)
+          setPollError(
+            e instanceof Error ? e.message : 'Could not load the AP Top 25.',
+          )
+      } finally {
+        if (!cancelled) setPollLoading(false)
+      }
+    })()
+    ;(async () => {
+      try {
+        const teams = await fetchTeamBank()
+        if (cancelled) return
+        setBank(teams)
+      } catch (e) {
+        if (!cancelled)
+          setBankError(
+            e instanceof Error ? e.message : 'Could not load the team bank.',
+          )
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [handleFreshPoll])
+
+  // Once the bank loads, fill in any saved ids the poll payload didn't carry.
+  useEffect(() => {
+    if (bank.length === 0) return
+    const saved = loadSaved()
+    if (!saved || saved.custom.length === 0) return
+    setCustom((cur) => {
+      if (cur.length === saved.custom.length) return cur
+      const merged = saved.custom
+        .map((id) => cur.find((t) => t.id === id) ?? bank.find((t) => t.id === id))
+        .filter((t): t is EspnTeam => Boolean(t))
+      return merged.length ? merged : cur
+    })
+    setRv((cur) => {
+      const merged = saved.rv
+        .map((r) => {
+          const base =
+            cur.find((t) => t.id === r.id) ?? bank.find((t) => t.id === r.id)
+          return base ? { ...base, points: r.points } : undefined
+        })
+        .filter((t): t is EspnTeam => Boolean(t))
+      return merged.length ? merged : cur
+    })
+  }, [bank])
+
+  // Persist custom rankings.
+  useEffect(() => {
+    if (!seededRef.current && custom.length === 0) return
+    try {
+      const saved: SavedTop25 = {
+        custom: custom.map((t) => t.id),
+        rv: rv.map((t) => ({ id: t.id, points: t.points })),
+        pollDate,
+        customized,
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
+    } catch {
+      /* storage unavailable — rankings still work for the session */
+    }
+  }, [custom, rv, pollDate, customized])
+
+  async function refreshPoll() {
+    setPollLoading(true)
+    setNotice('')
+    try {
+      const ap = await fetchApPoll()
+      setPoll(ap)
+      if (ap.date && pollDate && ap.date !== pollDate) {
+        if (customized) {
+          setPendingPoll(ap)
+          setNotice(
+            `A new AP poll is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
+          )
+        } else {
+          adoptPoll(ap, false)
+          setNotice(`Updated to the new AP poll (${formatPollDate(ap.date)}).`)
+        }
+      } else {
+        setNotice(`Already on the latest AP poll (${formatPollDate(ap.date)}).`)
+      }
+    } catch (e) {
+      setPollError(e instanceof Error ? e.message : 'Refresh failed.')
+    } finally {
+      setPollLoading(false)
+    }
+  }
+
+  function markCustomized() {
+    setCustomized(true)
+  }
+
+  function move(index: number, dir: -1 | 1) {
+    setCustom((c) => {
+      const next = [...c]
+      const j = index + dir
+      if (j < 0 || j >= next.length) return c
+      ;[next[index], next[j]] = [next[j], next[index]]
+      return next
+    })
+    markCustomized()
+  }
+
+  function removeFromCustom(id: string) {
+    setCustom((c) => c.filter((t) => t.id !== id))
+    markCustomized()
+  }
+
+  function addTeam(team: EspnTeam) {
+    if (custom.some((t) => t.id === team.id) || rv.some((t) => t.id === team.id))
+      return
+    if (custom.length < 25) {
+      setCustom((c) => [...c, team])
+    } else {
+      setRv((r) => [...r, { ...team, points: 0 }])
+    }
+    markCustomized()
+  }
+
+  function promoteFromRv(id: string) {
+    if (custom.length >= 25) return
+    setRv((r) => {
+      const team = r.find((t) => t.id === id)
+      if (team) setCustom((c) => [...c, team])
+      return r.filter((t) => t.id !== id)
+    })
+    markCustomized()
+  }
+
+  function removeFromRv(id: string) {
+    setRv((r) => r.filter((t) => t.id !== id))
+    markCustomized()
+  }
+
+  function resetToAp() {
+    if (!poll) return
+    if (
+      customized &&
+      !window.confirm('Reset to the current AP Top 25? Your custom order will be replaced.')
+    )
+      return
+    adoptPoll(poll, false)
+    setNotice('Reset to the current AP Top 25.')
+  }
+
+  const inTop25 = useMemo(() => new Set(custom.map((t) => t.id)), [custom])
+  const inRv = useMemo(() => new Set(rv.map((t) => t.id)), [rv])
+
+  const bankFiltered = useMemo(() => {
+    if (confTab === 'All') return bank
+    return bank.filter((t) => t.conference === confTab)
+  }, [bank, confTab])
+
+  const conferences = useMemo(() => {
+    const present = Array.from(new Set(bank.map((t) => t.conference)))
+    return ['All', ...CONFERENCE_ORDER.filter((c) => present.includes(c)), ...present.filter((c) => !CONFERENCE_ORDER.includes(c))]
+  }, [bank])
+
+  const rvSorted = useMemo(
+    () => [...rv].sort((a, b) => b.points - a.points),
+    [rv],
+  )
+
+  /* ---------------- Shareable card (canvas PNG) ---------------- */
+  function loadImage(src: string): Promise<HTMLImageElement | null> {
+    return new Promise((resolve) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = src
+    })
+  }
+
+  async function downloadCard() {
+    if (custom.length === 0) return
+    setCardBusy(true)
+    try {
+      const W = 1080
+      const H = 1500
+      const canvas = document.createElement('canvas')
+      canvas.width = W
+      canvas.height = H
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvas not supported in this browser')
+      // Near-black background + warm golden-brown bokeh glow.
+      ctx.fillStyle = '#0d0b09'
+      ctx.fillRect(0, 0, W, H)
+      let seed = 42
+      const rand = () => {
+        seed = (seed * 16807) % 2147483647
+        return seed / 2147483647
+      }
+      for (let i = 0; i < 46; i++) {
+        const x = rand() * W
+        const y = rand() * H
+        const r = 24 + rand() * 110
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+        const warm = rand() > 0.5
+        g.addColorStop(0, warm ? 'rgba(201,162,39,0.20)' : 'rgba(146,90,42,0.16)')
+        g.addColorStop(1, 'rgba(201,162,39,0)')
+        ctx.fillStyle = g
+        ctx.beginPath()
+        ctx.arc(x, y, r, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      const cx = W / 2
+      // SSB badge with gold football.
+      ctx.fillStyle = '#000'
+      ctx.beginPath()
+      ctx.arc(cx, 92, 46, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#c9a227'
+      ctx.lineWidth = 3
+      ctx.stroke()
+      ctx.save()
+      ctx.translate(cx, 92)
+      ctx.rotate(-Math.PI / 5)
+      ctx.fillStyle = '#c9a227'
+      ctx.beginPath()
+      ctx.ellipse(0, 0, 30, 18, 0, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#0d0b09'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(-14, 0)
+      ctx.lineTo(14, 0)
+      ctx.stroke()
+      for (const lx of [-9, -3, 3, 9]) {
+        ctx.beginPath()
+        ctx.moveTo(lx, -5)
+        ctx.lineTo(lx, 5)
+        ctx.stroke()
+      }
+      ctx.restore()
+      ctx.fillStyle = '#e8e6e1'
+      ctx.font = '700 34px Georgia, serif'
+      ctx.textAlign = 'center'
+      ctx.fillText('SSB', cx, 100)
+      // Gold-bordered panel.
+      const panelX = 60
+      const panelY = 168
+      const panelW = W - 120
+      ctx.strokeStyle = '#c9a227'
+      ctx.lineWidth = 3
+      ctx.strokeRect(panelX, panelY, panelW, 190)
+      ctx.fillStyle = '#111010'
+      ctx.fillRect(panelX, panelY, panelW, 190)
+      ctx.fillStyle = '#b9b7b2'
+      ctx.font = '600 30px Georgia, serif'
+      ctx.fillText("SETH'S SPORTS BOOK", cx, panelY + 52)
+      // Huge metallic silver 3D TOP 25.
+      ctx.font = '900 120px Georgia, serif'
+      ctx.fillStyle = '#3a3a3a'
+      ctx.fillText('TOP 25', cx + 4, panelY + 168)
+      const grad = ctx.createLinearGradient(0, panelY + 60, 0, panelY + 175)
+      grad.addColorStop(0, '#f4f4f4')
+      grad.addColorStop(0.5, '#c8c8c8')
+      grad.addColorStop(1, '#8a8a8a')
+      ctx.fillStyle = grad
+      ctx.fillText('TOP 25', cx, panelY + 164)
+      // Date line.
+      const dateY = panelY + 232
+      ctx.fillStyle = '#d8d2c4'
+      ctx.font = '600 24px Georgia, serif'
+      ctx.fillText(`AP POLL — ${formatPollDate(pollDate)}`, cx, dateY)
+      // Six small squares: four filled, two empty.
+      const sqY = dateY + 34
+      for (let i = 0; i < 6; i++) {
+        const sx = cx - 75 + i * 30
+        if (i < 4) {
+          ctx.fillStyle = '#c9a227'
+          ctx.fillRect(sx, sqY, 20, 20)
+        } else {
+          ctx.strokeStyle = '#c9a227'
+          ctx.lineWidth = 2
+          ctx.strokeRect(sx, sqY, 20, 20)
+        }
+      }
+      ctx.fillStyle = '#b9b7b2'
+      ctx.font = '600 22px Georgia, serif'
+      ctx.fillText(`CFP SELECTION DAY: ${CFP_SELECTION_DAY}`, cx, sqY + 62)
+      // 5x5 grid of team-color tiles.
+      const gridX = 60
+      const gridY = 470
+      const tile = 186
+      const gap = 12
+      const logos = await Promise.all(
+        custom.slice(0, 25).map((t) => loadImage(t.logo)),
+      )
+      for (let i = 0; i < 25; i++) {
+        const row = Math.floor(i / 5)
+        const col = i % 5
+        const x = gridX + col * (tile + gap)
+        const y = gridY + row * (tile + gap)
+        const team = custom[i]
+        ctx.fillStyle = team ? `#${team.color}` : '#1c1a17'
+        ctx.fillRect(x, y, tile, tile)
+        ctx.strokeStyle = '#c9a227'
+        ctx.lineWidth = 2
+        ctx.strokeRect(x, y, tile, tile)
+        if (team) {
+          const img = logos[i]
+          if (img) {
+            const s = Math.min(img.width, img.height)
+            const pad = 34
+            ctx.drawImage(
+              img,
+              (img.width - s) / 2,
+              (img.height - s) / 2,
+              s,
+              s,
+              x + pad,
+              y + pad,
+              tile - pad * 2,
+              tile - pad * 2,
+            )
+          } else {
+            ctx.fillStyle = '#ffffff'
+            ctx.font = '700 64px Georgia, serif'
+            ctx.fillText(team.abbreviation, x + tile / 2, y + tile / 2 + 22)
+          }
+          // Small black rank-number badge overlapping top-left corner.
+          ctx.fillStyle = '#000'
+          ctx.beginPath()
+          ctx.arc(x + 4, y + 4, 26, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#c9a227'
+          ctx.lineWidth = 2
+          ctx.stroke()
+          ctx.fillStyle = '#fff'
+          ctx.font = '700 26px Georgia, serif'
+          ctx.fillText(String(i + 1), x + 4, y + 13)
+        }
+      }
+      // Italic footer naming Seth's No. 1.
+      ctx.fillStyle = '#e8e6e1'
+      ctx.font = 'italic 600 30px Georgia, serif'
+      ctx.fillText(
+        custom[0] ? `Seth's No. 1: ${custom[0].displayName}` : "Seth's Top 25",
+        cx,
+        gridY + 5 * (tile + gap) + 52,
+      )
+      await new Promise<void>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error('Could not render the card image'))
+            return
+          }
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = 'seths-top-25.png'
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          URL.revokeObjectURL(url)
+          resolve()
+        }, 'image/png')
+      })
+      setNotice('Downloaded your Top 25 card as a PNG.')
+    } catch (e) {
+      setNotice(
+        `Could not render the card: ${e instanceof Error ? e.message : 'unknown error'}. Your rankings are still saved.`,
+      )
+    } finally {
+      setCardBusy(false)
+    }
+  }
+
+  return (
+    <div className="top25-tab">
+      <div className="cfp-hero">
+        <div className="ssb-badge" aria-hidden="true">
+          <span className="football" />
+          <span className="ssb-letters">SSB</span>
+        </div>
+        <div className="cfp-panel">
+          <div className="cfp-eyebrow">SETH&rsquo;S SPORTS BOOK</div>
+          <div className="cfp-title">TOP 25</div>
+          <div className="cfp-dateline">
+            AP POLL — {formatPollDate(pollDate)}
+          </div>
+          <div className="cfp-squares" aria-hidden="true">
+            <span className="sq filled" />
+            <span className="sq filled" />
+            <span className="sq filled" />
+            <span className="sq filled" />
+            <span className="sq" />
+            <span className="sq" />
+          </div>
+          <div className="cfp-selection">
+            CFP SELECTION DAY: {CFP_SELECTION_DAY}
+          </div>
+        </div>
+      </div>
+
+      <div className="top25-controls">
+        <button className="btn btn-gold" onClick={refreshPoll} disabled={pollLoading}>
+          {pollLoading ? 'Checking poll…' : 'Refresh poll'}
+        </button>
+        <button className="btn btn-ghost-light" onClick={resetToAp} disabled={!poll}>
+          Reset to AP Top 25
+        </button>
+        <span className="poll-status">
+          {pollLoading
+            ? 'Loading the AP poll…'
+            : pollError
+              ? `AP poll unavailable: ${pollError}`
+              : `On the AP poll dated ${formatPollDate(pollDate)}${customized ? ' · customized' : ''}`}
+        </span>
+      </div>
+
+      {pollError && custom.length === 0 && (
+        <p className="top25-error">
+          Couldn&rsquo;t load the AP Top 25 from ESPN right now ({pollError}).
+          Check your connection and hit “Refresh poll” — nothing was wiped;
+          any saved rankings are still in this browser.
+        </p>
+      )}
+
+      {pendingPoll && (
+        <div className="pending-poll" role="alert">
+          <p>
+            <strong>New AP poll available</strong> — {formatPollDate(pendingPoll.date)}.
+            Load it as a starting point? Your current custom rankings stay put
+            unless you say yes.
+          </p>
+          <div>
+            <button
+              className="btn btn-gold"
+              onClick={() => adoptPoll(pendingPoll, false)}
+            >
+              Yes — load the new poll
+            </button>{' '}
+            <button className="btn btn-ghost-light" onClick={() => setPendingPoll(null)}>
+              No — keep my rankings
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notice && <p className="notice notice-dark">{notice}</p>}
+
+      <div className="top25-layout">
+        {/* ---- Custom Top 25 ---- */}
+        <section className="panel panel-dark" aria-label="Seth's Top 25">
+          <div className="panel-head">
+            <h2>Seth&rsquo;s Top 25</h2>
+            <span className="count">{custom.length} / 25</span>
+          </div>
+          {custom.length === 0 ? (
+            <p className="empty-note empty-note-dark">
+              {pollLoading
+                ? 'Loading the AP poll…'
+                : 'No rankings yet — refresh the poll or add teams from the bank.'}
+            </p>
+          ) : (
+            <ol className="top25-list">
+              {custom.map((team, i) => (
+                <li
+                  key={team.id}
+                  className="top25-row"
+                  draggable
+                  onDragStart={() => setDragIndex(i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (dragIndex === null || dragIndex === i) return
+                    setCustom((c) => {
+                      const next = [...c]
+                      const [moved] = next.splice(dragIndex, 1)
+                      next.splice(i, 0, moved)
+                      return next
+                    })
+                    setDragIndex(null)
+                    markCustomized()
+                  }}
+                  onDragEnd={() => setDragIndex(null)}
+                >
+                  <span className="rank-num rank-num-dark">{i + 1}</span>
+                  <Logo
+                    src={team.logo}
+                    label={team.displayName}
+                    size={34}
+                    fallbackBg={`#${team.color}`}
+                    fallbackColor="#fff"
+                  />
+                  <span className="row-main">
+                    <strong>{team.displayName}</strong>
+                    <span className="row-sub">
+                      {team.conference}
+                      {team.record ? ` · ${team.record}` : ''}
+                      {team.points ? ` · ${team.points} pts` : ''}
+                    </span>
+                  </span>
+                  <span className="row-btns">
+                    <button aria-label={`Move ${team.displayName} up`} onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
+                    <button aria-label={`Move ${team.displayName} down`} onClick={() => move(i, 1)} disabled={i === custom.length - 1}>↓</button>
+                    <button aria-label={`Remove ${team.displayName}`} onClick={() => removeFromCustom(team.id)}>×</button>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {/* Receiving Votes */}
+          <h3 className="rv-head">Receiving Votes</h3>
+          {rvSorted.length === 0 ? (
+            <p className="empty-note empty-note-dark">
+              No teams receiving votes — add a team from the bank once the Top 25 is full.
+            </p>
+          ) : (
+            <ul className="rv-list">
+              {rvSorted.map((team) => (
+                <li key={team.id} className="rv-row">
+                  <Logo src={team.logo} label={team.displayName} size={28} fallbackBg={`#${team.color}`} fallbackColor="#fff" />
+                  <span className="row-main">
+                    <strong>{team.displayName}</strong>
+                    <span className="row-sub">
+                      {team.conference}
+                      {team.record ? ` · ${team.record}` : ''}
+                    </span>
+                  </span>
+                  <span className="rv-votes">{team.points} votes</span>
+                  <button
+                    className="btn btn-ghost-light btn-small"
+                    onClick={() => promoteFromRv(team.id)}
+                    disabled={custom.length >= 25}
+                    title={custom.length >= 25 ? 'Top 25 is full — remove a team first' : 'Move into the Top 25'}
+                  >
+                    ↑ Top 25
+                  </button>
+                  <button className="row-x" aria-label={`Remove ${team.displayName} from receiving votes`} onClick={() => removeFromRv(team.id)}>×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="submit-row">
+            <button
+              className="btn btn-gold btn-submit"
+              onClick={downloadCard}
+              disabled={custom.length === 0 || cardBusy}
+            >
+              {cardBusy ? 'Rendering card…' : 'Submit — download Top 25 card (PNG)'}
+            </button>
+          </div>
+          {custom[0] && (
+            <p className="card-footer-preview">
+              <em>Seth&rsquo;s No. 1: {custom[0].displayName}</em>
+            </p>
+          )}
+        </section>
+
+        {/* ---- Team bank ---- */}
+        <section className="panel panel-dark bank-panel" aria-label="FBS team bank">
+          <div className="panel-head">
+            <h2>Team bank</h2>
+            <span className="count">{bankFiltered.length} teams</span>
+          </div>
+          {bankError && <p className="top25-error">{bankError}</p>}
+          <div className="conf-tabs" role="group" aria-label="Filter by conference">
+            {conferences.map((c) => (
+              <button
+                key={c}
+                className={confTab === c ? 'chip chip-gold-active' : 'chip chip-dark'}
+                onClick={() => setConfTab(c)}
+                aria-pressed={confTab === c}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+          <ul className="bank-list bank-list-dark">
+            {bankFiltered.map((team) => {
+              const placed = inTop25.has(team.id)
+              const inRvSet = inRv.has(team.id)
+              return (
+                <li key={team.id}>
+                  <button
+                    className={placed || inRvSet ? 'bank-row bank-row-dark placed' : 'bank-row bank-row-dark'}
+                    onClick={() => addTeam(team)}
+                    disabled={placed || inRvSet}
+                    title={placed ? 'Already in your Top 25' : inRvSet ? 'Already receiving votes' : custom.length >= 25 ? 'Top 25 is full — adds to Receiving Votes' : 'Add to your Top 25'}
+                  >
+                    <Logo src={team.logo} label={team.displayName} size={30} fallbackBg={`#${team.color}`} fallbackColor="#fff" />
+                    <span className="row-main">
+                      <strong>{team.displayName}</strong>
+                      <span className="row-sub">
+                        {team.conference}
+                        {team.record ? ` · ${team.record}` : ''}
+                      </span>
+                    </span>
+                    <span className="row-cons">
+                      {placed ? `✓ #${custom.findIndex((t) => t.id === team.id) + 1}` : inRvSet ? '✓ RV' : custom.length >= 25 ? '+ RV' : '+ Add'}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          {bank.length === 0 && !bankError && (
+            <p className="empty-note empty-note-dark">Loading the 138 FBS teams…</p>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
