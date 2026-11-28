@@ -5,7 +5,8 @@ import { Top25 } from './Top25'
 export function App() {
   const [tab, setTab] = useState<'draft' | 'top25'>('draft')
   return (
-    <div className="app">
+    <div className={tab === 'top25' ? 'app app-dark' : 'app'}>
+      <div className="app-inner">
       <a className="back-home" href="../">← Back to Home</a>
       <header className="app-header">
         <div className="brand">
@@ -45,6 +46,7 @@ export function App() {
         CFP rankings (AP poll before they start) from ESPN at runtime. Nothing
         here writes to the Sheet.
       </footer>
+      </div>
     </div>
   )
 }

@@ -52,6 +52,9 @@ interface SavedTop25 {
   pollDate: string
   customized: boolean
   source?: 'CFP' | 'AP'
+  /** Poll date the empty-RV backfill already ran for (so a deliberate
+      "clear Receiving Votes" isn't undone on the next load). */
+  rvBackfilledFor?: string
 }
 
 function normalizeTeam(raw: any, points = 0, record = ''): EspnTeam {
@@ -78,7 +81,10 @@ function normalizeTeam(raw: any, points = 0, record = ''): EspnTeam {
   }
 }
 
-/** Prefer the Playoff Committee rankings once they exist; AP before that. */
+/** Prefer the Playoff Committee rankings once they exist; AP before that.
+    The CFP publishes no "others receiving votes", so when it has none we
+    fall back to the AP poll's others (minus any team already in the Top 25),
+    so Receiving Votes is never empty while the AP poll exists. */
 async function fetchPoll(): Promise<ApPoll> {
   const res = await fetch(RANKINGS_URL)
   if (!res.ok) throw new Error(`Rankings fetch failed (HTTP ${res.status})`)
@@ -86,21 +92,27 @@ async function fetchPoll(): Promise<ApPoll> {
   const cfp = (data.rankings ?? []).find(
     (r: any) => r.type === 'cfp' || /playoff committee/i.test(r.name ?? ''),
   )
+  const apEntry = (data.rankings ?? []).find(
+    (r: any) => r.type === 'ap' || /AP Top 25/i.test(r.name ?? ''),
+  )
   const entry =
-    cfp ??
-    (data.rankings ?? []).find(
-      (r: any) => r.type === 'ap' || /AP Top 25/i.test(r.name ?? ''),
-    )
+    cfp ?? apEntry
   if (!entry) throw new Error('No CFP or AP rankings found in the ESPN rankings response')
   const source: 'CFP' | 'AP' = cfp ? 'CFP' : 'AP'
   const teams = (entry.ranks ?? [])
     .slice()
     .sort((a: any, b: any) => a.current - b.current)
     .map((r: any) => normalizeTeam(r, r.points ?? 0))
-  const receivingVotes = (entry.others ?? [])
-    .slice()
-    .sort((a: any, b: any) => (b.points ?? 0) - (a.points ?? 0))
-    .map((r: any) => normalizeTeam(r, r.points ?? 0))
+  const topIds = new Set(teams.map((t: EspnTeam) => t.id))
+  const toRv = (rows: any[]) =>
+    (rows ?? [])
+      .map((r: any) => normalizeTeam(r, r.points ?? 0))
+      .filter((t) => !topIds.has(t.id))
+      .sort((a, b) => b.points - a.points)
+  let receivingVotes = toRv(entry.others)
+  if (receivingVotes.length === 0 && apEntry && apEntry !== entry) {
+    receivingVotes = toRv(apEntry.others)
+  }
   return { date: entry.date ?? '', teams, receivingVotes, source }
 }
 
@@ -157,6 +169,7 @@ export function Top25() {
   const [pollLoading, setPollLoading] = useState(true)
   const [custom, setCustom] = useState<EspnTeam[]>([])
   const [rv, setRv] = useState<EspnTeam[]>([])
+  const [rvBackfilledFor, setRvBackfilledFor] = useState('')
   const [pollDate, setPollDate] = useState('')
   const [customized, setCustomized] = useState(false)
   const [pendingPoll, setPendingPoll] = useState<ApPoll | null>(null)
@@ -208,6 +221,7 @@ export function Top25() {
       setPollDate(saved.pollDate)
       setCustomized(saved.customized)
       if (saved.source) setPollSource(saved.source)
+      if (saved.rvBackfilledFor) setRvBackfilledFor(saved.rvBackfilledFor)
     }
     let cancelled = false
     ;(async () => {
@@ -232,7 +246,19 @@ export function Top25() {
             .filter((t): t is EspnTeam => t !== null)
           if (resolved.length === saved.custom.length) {
             setCustom(resolved)
-            setRv(resolvedRv)
+            // The CFP poll carries no Receiving Votes, so a saved list from
+            // a CFP adopt can be empty — backfill it once per poll date from
+            // this poll's RV (already the AP others when the CFP has none).
+            // A deliberate clear isn't undone: the flag records the date.
+            const resolvedIds = new Set(resolved.map((t) => t.id))
+            const backfill =
+              resolvedRv.length === 0 &&
+              saved.rvBackfilledFor !== ap.date &&
+              ap.receivingVotes.length > 0
+                ? ap.receivingVotes.filter((t) => !resolvedIds.has(t.id))
+                : resolvedRv
+            setRv(backfill)
+            if (backfill !== resolvedRv) setRvBackfilledFor(ap.date)
           }
           // If some ids are only in the bank, the bank effect below fills them.
         }
@@ -293,12 +319,13 @@ export function Top25() {
         pollDate,
         customized,
         source: pollSource,
+        rvBackfilledFor: rvBackfilledFor || undefined,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
     } catch {
       /* storage unavailable — rankings still work for the session */
     }
-  }, [custom, rv, pollDate, customized, pollSource])
+  }, [custom, rv, pollDate, customized, pollSource, rvBackfilledFor])
 
   async function refreshPoll() {
     setPollLoading(true)
@@ -423,12 +450,21 @@ export function Top25() {
   )
 
   /* ---------------- Shareable card (canvas PNG) ---------------- */
-  function loadImage(src: string): Promise<HTMLImageElement | null> {
+  /** Load a logo for the canvas. Falls back to the built-in bank's canonical
+      ESPN logo URL when the poll's URL won't load, so a bad link never
+      leaves a tile blank. */
+  function loadImage(src: string, fallbackSrc?: string): Promise<HTMLImageElement | null> {
     return new Promise((resolve) => {
       const img = new Image()
       img.crossOrigin = 'anonymous'
       img.onload = () => resolve(img)
-      img.onerror = () => resolve(null)
+      img.onerror = () => {
+        if (fallbackSrc && fallbackSrc !== src) {
+          loadImage(fallbackSrc).then(resolve)
+        } else {
+          resolve(null)
+        }
+      }
       img.src = src
     })
   }
@@ -547,7 +583,13 @@ export function Top25() {
       const tile = 186
       const gap = 12
       const logos = await Promise.all(
-        custom.slice(0, 25).map((t) => loadImage(t.logo)),
+        custom.slice(0, 25).map((t) => {
+          const bankLogo = STATIC_BANK.find((b) => b.id === t.id)?.logo
+          return loadImage(
+            bankLogo ?? t.logo,
+            bankLogo && bankLogo !== t.logo ? t.logo : undefined,
+          )
+        }),
       )
       for (let i = 0; i < 25; i++) {
         const row = Math.floor(i / 5)
@@ -563,8 +605,14 @@ export function Top25() {
         if (team) {
           const img = logos[i]
           if (img) {
+            // White disc behind the mark: some marks are dark-on-dark or
+            // white-on-light against their team color and vanish on the tile.
+            ctx.fillStyle = '#ffffff'
+            ctx.beginPath()
+            ctx.arc(x + tile / 2, y + tile / 2, 70, 0, Math.PI * 2)
+            ctx.fill()
             const s = Math.min(img.width, img.height)
-            const pad = 34
+            const pad = 35
             ctx.drawImage(
               img,
               (img.width - s) / 2,
@@ -799,20 +847,6 @@ export function Top25() {
             </ul>
           )}
 
-          <div className="submit-row">
-            <button
-              className="btn btn-gold btn-submit"
-              onClick={downloadCard}
-              disabled={custom.length === 0 || cardBusy}
-            >
-              {cardBusy ? 'Rendering card…' : 'Submit — download Top 25 card (PNG)'}
-            </button>
-          </div>
-          {custom[0] && (
-            <p className="card-footer-preview">
-              <em>Seth&rsquo;s No. 1: {custom[0].displayName}</em>
-            </p>
-          )}
         </section>
 
         {/* ---- Team bank ---- */}
@@ -874,6 +908,19 @@ export function Top25() {
           )}
         </section>
       </div>
+
+      {/* Shareable card — a small footnote at the very bottom, not a big button. */}
+      <p className="card-download-note">
+        <span aria-hidden="true" className="card-download-star">★</span>{' '}
+        <button
+          className="card-download-link"
+          onClick={downloadCard}
+          disabled={custom.length === 0 || cardBusy}
+        >
+          {cardBusy ? 'Rendering your card…' : 'Download your Top 25 as a shareable card (PNG)'}
+        </button>
+        <span> — save it to share your rankings anywhere.</span>
+      </p>
     </div>
   )
 }

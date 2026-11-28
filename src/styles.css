@@ -13,6 +13,19 @@ button { font-family: inherit; cursor: pointer; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .app { max-width: 1180px; margin: 0 auto; padding: 0 16px 40px; }
+/* Top 25 tab: the black takes up the entire page — no beige anywhere. */
+.app-dark {
+  background: #0d0b09; max-width: none; min-height: 100vh;
+  padding: 0 0 40px; color: #e8e6e1;
+}
+.app-dark .app-inner { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+.app-dark .back-home { color: #b9b7b2; }
+.app-dark .back-home:hover { color: #e8e6e1; }
+.app-dark .app-header h1 { color: #e8e6e1; }
+.app-dark .tagline { color: #b9b7b2; }
+.app-dark .tab { border-color: #c9a227; color: #e8e6e1; }
+.app-dark .tab-active { background: #c9a227; border-color: #c9a227; color: #111; }
+.app-dark .app-footer { border-top-color: #3a3226; color: #a49d8d; }
 /* Back to the site home (the app has no site header of its own). */
 .back-home {
   display: inline-block;
@@ -242,6 +255,17 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .empty-note-dark { color: #a49d8d; }
 .rv-head { margin: 18px 0 8px; font-size: 16px; color: #c9a227; letter-spacing: 1px; }
+/* Shareable-card footnote: a small disclosure at the very bottom of the tab. */
+.card-download-note {
+  text-align: center; margin: 26px auto 6px; font-size: 14px; color: #a49d8d;
+}
+.card-download-star { color: #c9a227; }
+.card-download-link {
+  background: none; border: 0; padding: 0; color: #c9a227; font-size: 14px;
+  font-weight: 700; text-decoration: underline; text-underline-offset: 3px;
+}
+.card-download-link:hover { color: #e8e6e1; }
+.card-download-link:disabled { opacity: .45; cursor: not-allowed; text-decoration: none; }
 .rv-row {
   display: flex; align-items: center; gap: 10px;
   background: #211e1a; border: 1px solid #3a3226; border-radius: 10px;
