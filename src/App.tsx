@@ -6,6 +6,7 @@ export function App() {
   const [tab, setTab] = useState<'draft' | 'top25'>('draft')
   return (
     <div className="app">
+      <a className="back-home" href="../">← Back to Home</a>
       <header className="app-header">
         <div className="brand">
           <span className="brand-badge">SSB</span>
@@ -41,7 +42,8 @@ export function App() {
       <footer className="app-footer">
         Standalone twin of the hosted “my-big-board-ranker” app. Draft data is
         a Nov 25, 2026 snapshot of the Google Sheet; the Top 25 loads the live
-        AP poll from ESPN at runtime. Nothing here writes to the Sheet.
+        CFP rankings (AP poll before they start) from ESPN at runtime. Nothing
+        here writes to the Sheet.
       </footer>
     </div>
   )

@@ -13,6 +13,18 @@ button { font-family: inherit; cursor: pointer; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .app { max-width: 1180px; margin: 0 auto; padding: 0 16px 40px; }
+/* Back to the site home (the app has no site header of its own). */
+.back-home {
+  display: inline-block;
+  margin-top: 14px;
+  color: #6b6353;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  border-bottom: 1px solid #c9a227;
+  padding-bottom: 1px;
+}
+.back-home:hover { color: #111; }
 .app-header {
   display: flex; flex-wrap: wrap; gap: 16px;
   align-items: center; justify-content: space-between;

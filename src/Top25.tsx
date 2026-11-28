@@ -114,7 +114,10 @@ async function fetchRecords(): Promise<Map<string, string>> {
     for (const entry of s.standings ?? []) {
       const ref: string = entry.team?.$ref ?? ''
       const m = ref.match(/\/teams\/(\d+)/)
-      if (m) records.set(m[1], entry.records?.[0]?.summary ?? '')
+      if (m) {
+        const total = (entry.records ?? []).find((r: any) => r.type === 'total')
+        records.set(m[1], total?.summary ?? entry.records?.[0]?.summary ?? '')
+      }
     }
   } catch {
     /* records stay blank; the bank still works */
@@ -147,6 +150,7 @@ function formatPollDate(iso: string): string {
 
 export function Top25() {
   const [bank, setBank] = useState<EspnTeam[]>([])
+  const [records, setRecords] = useState<Map<string, string>>(new Map())
   const [poll, setPoll] = useState<ApPoll | null>(null)
   const [pollSource, setPollSource] = useState<'CFP' | 'AP'>('AP')
   const [pollError, setPollError] = useState('')
@@ -247,6 +251,7 @@ export function Top25() {
     ;(async () => {
       const records = await fetchRecords()
       if (cancelled) return
+      setRecords(records)
       setBank(STATIC_BANK.map((t) => ({ ...t, record: records.get(t.id) ?? '' })))
     })()
     return () => {
@@ -380,6 +385,10 @@ export function Top25() {
 
   const inTop25 = useMemo(() => new Set(custom.map((t) => t.id)), [custom])
   const inRv = useMemo(() => new Set(rv.map((t) => t.id)), [rv])
+
+  /** Live record from the standings endpoint; falls back to the poll's record
+      (the poll's record is frozen at the rankings date, the bank's is current). */
+  const liveRecord = (t: EspnTeam) => records.get(t.id) ?? t.record
 
   const bankFiltered = useMemo(() => {
     if (confTab === 'All') return bank
@@ -743,7 +752,7 @@ export function Top25() {
                     <strong>{team.displayName}</strong>
                     <span className="row-sub">
                       {team.conference}
-                      {team.record ? ` · ${team.record}` : ''}
+                      {liveRecord(team) ? ` · ${liveRecord(team)}` : ''}
                       {team.points ? ` · ${team.points} pts` : ''}
                     </span>
                   </span>
@@ -772,7 +781,7 @@ export function Top25() {
                     <strong>{team.displayName}</strong>
                     <span className="row-sub">
                       {team.conference}
-                      {team.record ? ` · ${team.record}` : ''}
+                      {liveRecord(team) ? ` · ${liveRecord(team)}` : ''}
                     </span>
                   </span>
                   <span className="rv-votes">{team.points} votes</span>
@@ -849,7 +858,7 @@ export function Top25() {
                       <strong>{team.displayName}</strong>
                       <span className="row-sub">
                         {team.conference}
-                        {team.record ? ` · ${team.record}` : ''}
+                        {liveRecord(team) ? ` · ${liveRecord(team)}` : ''}
                       </span>
                     </span>
                     <span className="row-cons">
