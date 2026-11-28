@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CONFERENCE_ORDER, FBS_TEAM_IDS, TEAM_CONFERENCE } from './fbs'
+import { CONFERENCE_ORDER, TEAM_CONFERENCE } from './fbs'
 import { Logo } from './Logo'
+import teamBankJson from '../data/team-bank.json'
 
 /* ------------------------------------------------------------------ */
 /* ESPN public endpoints (no API key).                                 */
-/*  AP poll:  site.api.espn.com/.../college-football/rankings         */
-/*            -> rankings[] entry with type "ap", ranks[25] + others  */
-/*  Team bank: site.api.espn.com/.../college-football/teams?limit=1000*/
-/*            -> filtered to the 138 FBS ids (static spine in fbs.ts) */
+/*  Rankings: site.api.espn.com/.../college-football/rankings         */
+/*            -> CFP "Playoff Committee Rankings" when they exist      */
+/*               (weekly from early Nov), else the AP Top 25.          */
+/*  Team bank: built in (data/team-bank.json, all 138 FBS teams) —    */
+/*            the live ESPN teams download is 1.8 MB and failed twice  */
+/*            from a browser check, so the bank no longer fetches.     */
 /*  Records:  sports.core.api.espn.com/.../groups/80/standings/0      */
-/*            -> one call, overall record inline per team             */
+/*            -> one small call, overall record inline per team        */
 /* ------------------------------------------------------------------ */
 const RANKINGS_URL =
   'https://site.api.espn.com/apis/site/v2/sports/football/college-football/rankings'
-const TEAMS_URL =
-  'https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000'
 const STANDINGS_URL =
   'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/2026/types/2/groups/80/standings/0'
 
@@ -38,13 +39,19 @@ interface ApPoll {
   date: string
   teams: EspnTeam[]
   receivingVotes: EspnTeam[]
+  /** 'CFP' once the Playoff Committee rankings exist, else 'AP'. */
+  source: 'CFP' | 'AP'
 }
+
+/** The built-in team bank: all 138 FBS teams, sorted by conference. */
+const STATIC_BANK: EspnTeam[] = teamBankJson as EspnTeam[]
 
 interface SavedTop25 {
   custom: string[]
   rv: { id: string; points: number }[]
   pollDate: string
   customized: boolean
+  source?: 'CFP' | 'AP'
 }
 
 function normalizeTeam(raw: any, points = 0, record = ''): EspnTeam {
@@ -71,62 +78,48 @@ function normalizeTeam(raw: any, points = 0, record = ''): EspnTeam {
   }
 }
 
-async function fetchApPoll(): Promise<ApPoll> {
+/** Prefer the Playoff Committee rankings once they exist; AP before that. */
+async function fetchPoll(): Promise<ApPoll> {
   const res = await fetch(RANKINGS_URL)
-  if (!res.ok) throw new Error(`AP poll fetch failed (HTTP ${res.status})`)
+  if (!res.ok) throw new Error(`Rankings fetch failed (HTTP ${res.status})`)
   const data = await res.json()
-  const ap = (data.rankings ?? []).find(
-    (r: any) => r.type === 'ap' || /AP Top 25/i.test(r.name ?? ''),
+  const cfp = (data.rankings ?? []).find(
+    (r: any) => r.type === 'cfp' || /playoff committee/i.test(r.name ?? ''),
   )
-  if (!ap) throw new Error('No AP Top 25 found in the ESPN rankings response')
-  const teams = (ap.ranks ?? [])
+  const entry =
+    cfp ??
+    (data.rankings ?? []).find(
+      (r: any) => r.type === 'ap' || /AP Top 25/i.test(r.name ?? ''),
+    )
+  if (!entry) throw new Error('No CFP or AP rankings found in the ESPN rankings response')
+  const source: 'CFP' | 'AP' = cfp ? 'CFP' : 'AP'
+  const teams = (entry.ranks ?? [])
     .slice()
     .sort((a: any, b: any) => a.current - b.current)
     .map((r: any) => normalizeTeam(r, r.points ?? 0))
-  const receivingVotes = (ap.others ?? [])
+  const receivingVotes = (entry.others ?? [])
     .slice()
     .sort((a: any, b: any) => (b.points ?? 0) - (a.points ?? 0))
     .map((r: any) => normalizeTeam(r, r.points ?? 0))
-  return { date: ap.date ?? '', teams, receivingVotes }
+  return { date: entry.date ?? '', teams, receivingVotes, source }
 }
 
-async function fetchTeamBank(): Promise<EspnTeam[]> {
-  const [teamsRes, standingsRes] = await Promise.all([
-    fetch(TEAMS_URL),
-    fetch(STANDINGS_URL).catch(() => null),
-  ])
-  if (!teamsRes.ok) throw new Error(`Team list fetch failed (HTTP ${teamsRes.status})`)
-  const data = await teamsRes.json()
-  const all = (data.sports?.[0]?.leagues?.[0]?.teams ?? []).map((w: any) => w.team)
-  const fbs = new Set(FBS_TEAM_IDS)
+/** Records only — the bank itself is built in. Fails silently; records stay blank. */
+async function fetchRecords(): Promise<Map<string, string>> {
   const records = new Map<string, string>()
-  if (standingsRes && standingsRes.ok) {
-    try {
-      const s = await standingsRes.json()
-      for (const entry of s.standings ?? []) {
-        const ref: string = entry.team?.$ref ?? ''
-        const m = ref.match(/\/teams\/(\d+)/)
-        if (m) records.set(m[1], entry.records?.[0]?.summary ?? '')
-      }
-    } catch {
-      /* records stay blank; poll data still covers ranked teams */
+  try {
+    const res = await fetch(STANDINGS_URL)
+    if (!res.ok) return records
+    const s = await res.json()
+    for (const entry of s.standings ?? []) {
+      const ref: string = entry.team?.$ref ?? ''
+      const m = ref.match(/\/teams\/(\d+)/)
+      if (m) records.set(m[1], entry.records?.[0]?.summary ?? '')
     }
+  } catch {
+    /* records stay blank; the bank still works */
   }
-  return all
-    .filter((t: any) => fbs.has(String(t.id)))
-    .map((t: any) =>
-      normalizeTeam({ team: t }, 0, records.get(String(t.id)) ?? ''),
-    )
-    // Sorted by conference (CONFERENCE_ORDER), then by name inside it,
-    // so the bank reads conference by conference.
-    .sort((a: EspnTeam, b: EspnTeam) => {
-      const ai = CONFERENCE_ORDER.indexOf(a.conference)
-      const bi = CONFERENCE_ORDER.indexOf(b.conference)
-      const ao = ai === -1 ? CONFERENCE_ORDER.length : ai
-      const bo = bi === -1 ? CONFERENCE_ORDER.length : bi
-      if (ao !== bo) return ao - bo
-      return a.displayName.localeCompare(b.displayName)
-    })
+  return records
 }
 
 function loadSaved(): SavedTop25 | null {
@@ -154,8 +147,8 @@ function formatPollDate(iso: string): string {
 
 export function Top25() {
   const [bank, setBank] = useState<EspnTeam[]>([])
-  const [bankError, setBankError] = useState('')
   const [poll, setPoll] = useState<ApPoll | null>(null)
+  const [pollSource, setPollSource] = useState<'CFP' | 'AP'>('AP')
   const [pollError, setPollError] = useState('')
   const [pollLoading, setPollLoading] = useState(true)
   const [custom, setCustom] = useState<EspnTeam[]>([])
@@ -174,6 +167,7 @@ export function Top25() {
     setCustom(ap.teams)
     setRv(ap.receivingVotes)
     setPollDate(ap.date)
+    setPollSource(ap.source)
     setCustomized(markCustomized)
     setPendingPoll(null)
   }, [])
@@ -191,11 +185,11 @@ export function Top25() {
           // Never wipe custom rankings without asking.
           setPendingPoll(ap)
           setNotice(
-            `A new AP poll is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
+            `A new ${ap.source === 'CFP' ? 'CFP rankings' : 'AP poll'} is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
           )
         } else {
           adoptPoll(ap, false)
-          setNotice(`Updated to the new AP poll (${formatPollDate(ap.date)}).`)
+          setNotice(`Updated to the new ${ap.source === 'CFP' ? 'CFP rankings' : 'AP poll'} (${formatPollDate(ap.date)}).`)
         }
       }
       // Same poll date: keep the saved custom rankings as-is.
@@ -209,11 +203,12 @@ export function Top25() {
     if (saved && saved.custom.length > 0) {
       setPollDate(saved.pollDate)
       setCustomized(saved.customized)
+      if (saved.source) setPollSource(saved.source)
     }
     let cancelled = false
     ;(async () => {
       try {
-        const ap = await fetchApPoll()
+        const ap = await fetchPoll()
         if (cancelled) return
         setPoll(ap)
         // Resolve saved ids against the freshly fetched poll + bank data.
@@ -242,23 +237,17 @@ export function Top25() {
       } catch (e) {
         if (!cancelled)
           setPollError(
-            e instanceof Error ? e.message : 'Could not load the AP Top 25.',
+            e instanceof Error ? e.message : 'Could not load the rankings.',
           )
       } finally {
         if (!cancelled) setPollLoading(false)
       }
     })()
+    // The bank is built in; only records come from the network (and may fail silently).
     ;(async () => {
-      try {
-        const teams = await fetchTeamBank()
-        if (cancelled) return
-        setBank(teams)
-      } catch (e) {
-        if (!cancelled)
-          setBankError(
-            e instanceof Error ? e.message : 'Could not load the team bank.',
-          )
-      }
+      const records = await fetchRecords()
+      if (cancelled) return
+      setBank(STATIC_BANK.map((t) => ({ ...t, record: records.get(t.id) ?? '' })))
     })()
     return () => {
       cancelled = true
@@ -298,31 +287,32 @@ export function Top25() {
         rv: rv.map((t) => ({ id: t.id, points: t.points })),
         pollDate,
         customized,
+        source: pollSource,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
     } catch {
       /* storage unavailable — rankings still work for the session */
     }
-  }, [custom, rv, pollDate, customized])
+  }, [custom, rv, pollDate, customized, pollSource])
 
   async function refreshPoll() {
     setPollLoading(true)
     setNotice('')
     try {
-      const ap = await fetchApPoll()
+      const ap = await fetchPoll()
       setPoll(ap)
       if (ap.date && pollDate && ap.date !== pollDate) {
         if (customized) {
           setPendingPoll(ap)
           setNotice(
-            `A new AP poll is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
+            `A new ${ap.source === 'CFP' ? 'CFP rankings' : 'AP poll'} is out (${formatPollDate(ap.date)}). Your custom rankings are untouched — choose below whether to load it.`,
           )
         } else {
           adoptPoll(ap, false)
-          setNotice(`Updated to the new AP poll (${formatPollDate(ap.date)}).`)
+          setNotice(`Updated to the new ${ap.source === 'CFP' ? 'CFP rankings' : 'AP poll'} (${formatPollDate(ap.date)}).`)
         }
       } else {
-        setNotice(`Already on the latest AP poll (${formatPollDate(ap.date)}).`)
+        setNotice(`Already on the latest ${ap.source === 'CFP' ? 'CFP rankings' : 'AP poll'} (${formatPollDate(ap.date)}).`)
       }
     } catch (e) {
       setPollError(e instanceof Error ? e.message : 'Refresh failed.')
@@ -381,11 +371,11 @@ export function Top25() {
     if (!poll) return
     if (
       customized &&
-      !window.confirm('Reset to the current AP Top 25? Your custom order will be replaced.')
+      !window.confirm(`Reset to the current ${pollSource === 'CFP' ? 'CFP' : 'AP'} Top 25? Your custom order will be replaced.`)
     )
       return
     adoptPoll(poll, false)
-    setNotice('Reset to the current AP Top 25.')
+    setNotice(`Reset to the current ${pollSource === 'CFP' ? 'CFP' : 'AP'} Top 25.`)
   }
 
   const inTop25 = useMemo(() => new Set(custom.map((t) => t.id)), [custom])
@@ -525,7 +515,7 @@ export function Top25() {
       const dateY = panelY + 232
       ctx.fillStyle = '#d8d2c4'
       ctx.font = '600 24px Georgia, serif'
-      ctx.fillText(`AP POLL — ${formatPollDate(pollDate)}`, cx, dateY)
+      ctx.fillText(`${pollSource === 'CFP' ? 'CFP RANKINGS' : 'AP POLL'} — ${formatPollDate(pollDate)}`, cx, dateY)
       // Six small squares: four filled, two empty.
       const sqY = dateY + 34
       for (let i = 0; i < 6; i++) {
@@ -641,7 +631,8 @@ export function Top25() {
           <div className="cfp-eyebrow">SETH&rsquo;S SPORTS BOOK</div>
           <div className="cfp-title">TOP 25</div>
           <div className="cfp-dateline">
-            AP POLL — {formatPollDate(pollDate)}
+            {pollSource === 'CFP' ? 'CFP RANKINGS' : 'AP POLL'}
+            {pollDate ? ` — ${formatPollDate(pollDate)}` : ''}
           </div>
           <div className="cfp-squares" aria-hidden="true">
             <span className="sq filled" />
@@ -659,24 +650,24 @@ export function Top25() {
 
       <div className="top25-controls">
         <button className="btn btn-gold" onClick={refreshPoll} disabled={pollLoading}>
-          {pollLoading ? 'Checking poll…' : 'Refresh poll'}
+          {pollLoading ? 'Checking rankings…' : 'Refresh rankings'}
         </button>
         <button className="btn btn-ghost-light" onClick={resetToAp} disabled={!poll}>
-          Reset to AP Top 25
+          Reset to {pollSource === 'CFP' ? 'CFP' : 'AP'} Top 25
         </button>
         <span className="poll-status">
           {pollLoading
-            ? 'Loading the AP poll…'
+            ? 'Loading the rankings…'
             : pollError
-              ? `AP poll unavailable: ${pollError}`
-              : `On the AP poll dated ${formatPollDate(pollDate)}${customized ? ' · customized' : ''}`}
+              ? `Rankings unavailable: ${pollError}`
+              : `On the ${pollSource === 'CFP' ? 'CFP rankings' : 'AP poll'} dated ${formatPollDate(pollDate)}${customized ? ' · customized' : ''}`}
         </span>
       </div>
 
       {pollError && custom.length === 0 && (
         <p className="top25-error">
-          Couldn&rsquo;t load the AP Top 25 from ESPN right now ({pollError}).
-          Check your connection and hit “Refresh poll” — nothing was wiped;
+          Couldn&rsquo;t load the rankings from ESPN right now ({pollError}).
+          Check your connection and hit “Refresh rankings” — nothing was wiped;
           any saved rankings are still in this browser.
         </p>
       )}
@@ -684,7 +675,7 @@ export function Top25() {
       {pendingPoll && (
         <div className="pending-poll" role="alert">
           <p>
-            <strong>New AP poll available</strong> — {formatPollDate(pendingPoll.date)}.
+            <strong>New {pendingPoll.source === 'CFP' ? 'CFP rankings' : 'AP poll'} available</strong> — {formatPollDate(pendingPoll.date)}.
             Load it as a starting point? Your current custom rankings stay put
             unless you say yes.
           </p>
@@ -714,8 +705,8 @@ export function Top25() {
           {custom.length === 0 ? (
             <p className="empty-note empty-note-dark">
               {pollLoading
-                ? 'Loading the AP poll…'
-                : 'No rankings yet — refresh the poll or add teams from the bank.'}
+                ? 'Loading the rankings…'
+                : 'No rankings yet — refresh the rankings or add teams from the bank.'}
             </p>
           ) : (
             <ol className="top25-list">
@@ -821,7 +812,6 @@ export function Top25() {
             <h2>Team bank</h2>
             <span className="count">{bankFiltered.length} teams</span>
           </div>
-          {bankError && <p className="top25-error">{bankError}</p>}
           <div className="conf-tabs" role="group" aria-label="Filter by conference">
             {conferences.map((c) => (
               <button
@@ -870,7 +860,7 @@ export function Top25() {
               )
             })}
           </ul>
-          {bank.length === 0 && !bankError && (
+          {bank.length === 0 && (
             <p className="empty-note empty-note-dark">Loading the 138 FBS teams…</p>
           )}
         </section>
