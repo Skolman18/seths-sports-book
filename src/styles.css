@@ -218,6 +218,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .bank-row-dark:hover { border-color: #c9a227; }
 .bank-row-dark.placed { background: #2e2a1e; }
+/* Conference group header inside the team bank (All view). Sticks to the
+   top of the scrollable bank while its conference scrolls past. */
+.bank-conf-head {
+  position: sticky; top: 0; z-index: 1;
+  background: #171512;
+  color: #c9a227;
+  font-size: .78rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  padding: 10px 10px 6px; margin: 12px 0 4px;
+  border-bottom: 1px solid #3a3226;
+}
 .empty-note-dark { color: #a49d8d; }
 .rv-head { margin: 18px 0 8px; font-size: 16px; color: #c9a227; letter-spacing: 1px; }
 .rv-row {

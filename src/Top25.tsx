@@ -117,7 +117,16 @@ async function fetchTeamBank(): Promise<EspnTeam[]> {
     .map((t: any) =>
       normalizeTeam({ team: t }, 0, records.get(String(t.id)) ?? ''),
     )
-    .sort((a: EspnTeam, b: EspnTeam) => a.displayName.localeCompare(b.displayName))
+    // Sorted by conference (CONFERENCE_ORDER), then by name inside it,
+    // so the bank reads conference by conference.
+    .sort((a: EspnTeam, b: EspnTeam) => {
+      const ai = CONFERENCE_ORDER.indexOf(a.conference)
+      const bi = CONFERENCE_ORDER.indexOf(b.conference)
+      const ao = ai === -1 ? CONFERENCE_ORDER.length : ai
+      const bo = bi === -1 ? CONFERENCE_ORDER.length : bi
+      if (ao !== bo) return ao - bo
+      return a.displayName.localeCompare(b.displayName)
+    })
 }
 
 function loadSaved(): SavedTop25 | null {
@@ -386,6 +395,23 @@ export function Top25() {
     if (confTab === 'All') return bank
     return bank.filter((t) => t.conference === confTab)
   }, [bank, confTab])
+
+  /** Bank rows: conference headers between groups when showing All. */
+  const bankRows = useMemo(() => {
+    type Row =
+      | { kind: 'header'; conference: string }
+      | { kind: 'team'; team: EspnTeam }
+    const rows: Row[] = []
+    let lastConf = ''
+    for (const team of bankFiltered) {
+      if (confTab === 'All' && team.conference !== lastConf) {
+        rows.push({ kind: 'header', conference: team.conference })
+        lastConf = team.conference
+      }
+      rows.push({ kind: 'team', team })
+    }
+    return rows
+  }, [bankFiltered, confTab])
 
   const conferences = useMemo(() => {
     const present = Array.from(new Set(bank.map((t) => t.conference)))
@@ -809,7 +835,15 @@ export function Top25() {
             ))}
           </div>
           <ul className="bank-list bank-list-dark">
-            {bankFiltered.map((team) => {
+            {bankRows.map((row) => {
+              if (row.kind === 'header') {
+                return (
+                  <li key={`conf-${row.conference}`} className="bank-conf-head">
+                    {row.conference}
+                  </li>
+                )
+              }
+              const team = row.team
               const placed = inTop25.has(team.id)
               const inRvSet = inRv.has(team.id)
               return (
